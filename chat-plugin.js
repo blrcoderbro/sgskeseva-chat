@@ -414,17 +414,19 @@
                     reconnection: false  // we handle reconnect manually
                 });
 
-                this.socket.emit('authenticate', { token }, (res) => {
-                    if (res.success) {
-                        this.isConnected = true;
-                        this.reconnectAttempts = 0;     // reset counter on successful auth
-                        this.reconnectDelay = RECONNECT_BASE_DELAY;
-                        this.updateStatus('Online', true);
-                        this.loadMessages();
-                    } else {
-                        this.updateStatus(res.message || 'Auth failed', false);
-                        this.scheduleReconnect();
-                    }
+                this.socket.on('connect', () => {
+                    this.socket.emit('authenticate', { token }, (res) => {
+                        if (res.success) {
+                            this.isConnected = true;
+                            this.reconnectAttempts = 0;     // reset counter on successful auth
+                            this.reconnectDelay = RECONNECT_BASE_DELAY;
+                            this.updateStatus('Online', true);
+                            this.loadMessages();
+                        } else {
+                            this.updateStatus(res.message || 'Auth failed', false);
+                            this.scheduleReconnect();
+                        }
+                    });
                 });
 
                 this.socket.on('new_message',       (data) => this.onNewMessage(data));
