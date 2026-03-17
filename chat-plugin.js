@@ -112,6 +112,10 @@
         unreadCount: 0,
         lastDateLabel: null,          // tracks current date group
         _pendingMsgId: null,          // id of last "sent" bubble awaiting ack
+        cachedToken: null,            // cached JWT so reconnects don't re-hit generate_chat_token
+        cachedTokenExpiry: 0,         // token expiry as Unix seconds
+        reconnectAttempts: 0,         // times we've tried to reconnect since last success
+        maxReconnectAttempts: 10,     // give up after this many consecutive failures
 
         /* ── init ───────────────────────────────────────────── */
         init: function (options) {
@@ -330,12 +334,19 @@
         /* ── authenticate + connect ─────────────────────────── */
         authenticateAndConnect: async function () {
             try {
-                const { token, websocketUrl } = await this.fetchChatToken();
-                // Use the websocket URL returned by the server (authoritative)
-                if (websocketUrl) this.config.websocketUrl = websocketUrl;
-                if (token && this.config.websocketUrl) {
-                    this.connect(token);
-                } else if (token && !this.config.websocketUrl) {
+                const nowSec = Date.now() / 1000;
+                const tokenStillValid = this.cachedToken && this.cachedTokenExpiry > nowSec + 60;
+
+                if (!tokenStillValid) {
+                    const { token, websocketUrl, expiresIn } = await this.fetchChatToken();
+                    this.cachedToken = token;
+                    this.cachedTokenExpiry = nowSec + (expiresIn || 86400);
+                    if (websocketUrl) this.config.websocketUrl = websocketUrl;
+                }
+
+                if (this.cachedToken && this.config.websocketUrl) {
+                    this.connect(this.cachedToken);
+                } else if (this.cachedToken && !this.config.websocketUrl) {
                     this.updateStatus('No WebSocket URL configured', false);
                 } else {
                     this.updateStatus('Could not get token', false);
@@ -343,7 +354,10 @@
             } catch (err) {
                 console.error('ChatWidget: Auth failed', err);
                 this.updateStatus(err.message || 'Authentication failed', false);
-                this.scheduleReconnect();
+                // Permanent errors (application not found, access denied) — no point retrying
+                if (!err.permanent) {
+                    this.scheduleReconnect();
+                }
             }
         },
 
@@ -371,7 +385,11 @@
                     500: 'Server error – contact support'
                 };
                 const msg = statusMessages[response.status] || `Request failed (${response.status})`;
-                throw new Error(msg);
+                const fetchErr = new Error(msg);
+                fetchErr.statusCode = response.status;
+                // 404 = application not found, 403 = access denied — retrying will never help
+                fetchErr.permanent = (response.status === 404 || response.status === 403);
+                throw fetchErr;
             }
 
             const ct   = response.headers.get('Content-Type') || '';
@@ -383,7 +401,8 @@
             if (!result.success) throw new Error(result.message || result.error || 'Token request failed');
             return {
                 token:        result.data?.token || null,
-                websocketUrl: result.data?.websocket_url || null
+                websocketUrl: result.data?.websocket_url || null,
+                expiresIn:    result.data?.expires_in   || 86400
             };
         },
 
@@ -398,6 +417,7 @@
                 this.socket.emit('authenticate', { token }, (res) => {
                     if (res.success) {
                         this.isConnected = true;
+                        this.reconnectAttempts = 0;     // reset counter on successful auth
                         this.reconnectDelay = RECONNECT_BASE_DELAY;
                         this.updateStatus('Online', true);
                         this.loadMessages();
@@ -426,9 +446,21 @@
 
         scheduleReconnect: function () {
             if (this.reconnectTimer) return;
+            if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+                this.updateStatus('Unable to connect. Please refresh the page.', false);
+                return;
+            }
+            this.reconnectAttempts++;
             this.reconnectTimer = setTimeout(() => {
                 this.reconnectTimer = null;
-                this.authenticateAndConnect();
+                // Reuse the cached token if still valid — avoids hammering generate_chat_token
+                const nowSec = Date.now() / 1000;
+                if (this.cachedToken && this.cachedTokenExpiry > nowSec + 60) {
+                    this.connect(this.cachedToken);
+                } else {
+                    this.cachedToken = null;
+                    this.authenticateAndConnect();
+                }
             }, this.reconnectDelay);
             this.reconnectDelay = Math.min(this.reconnectDelay * 2, RECONNECT_MAX_DELAY);
         },
@@ -611,6 +643,8 @@
             if (this.socket) this.socket.disconnect();
             clearTimeout(this.reconnectTimer);
             clearTimeout(this.typingTimeout);
+            this.cachedToken = null;
+            this.cachedTokenExpiry = 0;
             ['cwg-container', 'cwg-toggle', 'cwg-styles'].forEach(id => {
                 const el = document.getElementById(id);
                 if (el) el.remove();
