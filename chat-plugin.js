@@ -885,7 +885,8 @@
             currentSocketUrl = tokenData.websocket_url;
             scheduleTokenLifecycle(tokenData);
             socket = window.io(currentSocketUrl, {
-                transports: ['websocket', 'polling'],
+                // Use polling first for proxy compatibility, then upgrade to websocket.
+                transports: ['polling', 'websocket'],
                 reconnection: true,
                 reconnectionAttempts: 10,
                 reconnectionDelay: 1000,
