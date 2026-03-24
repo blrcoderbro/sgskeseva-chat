@@ -33,6 +33,7 @@
         unauthorizedOrigin: 'unauthorized-origin',
         invalidWebsocketUrl: 'invalid-websocket-url',
         tokenExpired: 'token-expired',
+        rateLimited: 'rate-limited',
         network: 'network',
         server: 'server',
         config: 'config'
@@ -552,6 +553,13 @@
             return;
         }
 
+        if (type === TOKEN_ERROR_TYPES.rateLimited) {
+            setStatus('Too many chat session requests. Please wait and retry.', 'error');
+            appendSystemMessage(message);
+            showRefreshAction('Refresh', 'Wait for the cooldown, then refresh the chat session.');
+            return;
+        }
+
         if (type === TOKEN_ERROR_TYPES.config) {
             setStatus('Chat setup is incomplete.', 'error');
             appendSystemMessage(message);
@@ -599,6 +607,15 @@
                     throw createFriendlyError('This domain is not authorized for this application. Please contact your administrator.', TOKEN_ERROR_TYPES.unauthorizedOrigin, true);
                 }
                 throw createFriendlyError('Unable to start chat from this page. Please contact your administrator.', TOKEN_ERROR_TYPES.server, true);
+            }
+
+            if (res.status === 429) {
+                const retryAfterRaw = res.headers.get('Retry-After');
+                const retryAfter = parseInt(retryAfterRaw || '0', 10);
+                const waitHint = retryAfter > 0
+                    ? (' Please retry after ' + retryAfter + ' seconds.')
+                    : '';
+                throw createFriendlyError('Too many chat bootstrap requests.' + waitHint, TOKEN_ERROR_TYPES.rateLimited, true);
             }
 
             if (!res.ok) {
@@ -777,8 +794,25 @@
         reconnectTimer = window.setTimeout(function() {
             reconnectTimer = null;
             cleanupSocket();
-            connect(true);
+            connect(false);
         }, delay);
+    }
+
+    function hasReusableSession() {
+        return !!sessionToken && !!currentSocketUrl && (!sessionExpiresAt || Date.now() < sessionExpiresAt);
+    }
+
+    function openSocketConnection(socketUrl) {
+        socket = window.io(socketUrl, {
+            // Polling-only mode avoids repeated websocket upgrade failures behind restrictive proxies.
+            transports: ['polling'],
+            upgrade: false,
+            reconnection: false,
+            query: {
+                token: sessionToken || ''
+            }
+        });
+        bindSocketEvents();
     }
 
     function bindSocketEvents() {
@@ -880,19 +914,16 @@
         setStatus('Preparing secure connection for this application...', 'info');
         appendSystemMessage('Opening secure chat for application #' + config.applicationId + '...');
 
+        if (!forceRefresh && hasReusableSession()) {
+            openSocketConnection(currentSocketUrl);
+            return;
+        }
+
         fetchChatToken().then(function(tokenData) {
             sessionToken = tokenData.token;
             currentSocketUrl = tokenData.websocket_url;
             scheduleTokenLifecycle(tokenData);
-            socket = window.io(currentSocketUrl, {
-                // Use polling first for proxy compatibility, then upgrade to websocket.
-                transports: ['polling', 'websocket'],
-                reconnection: true,
-                reconnectionAttempts: 10,
-                reconnectionDelay: 1000,
-                reconnectionDelayMax: 15000
-            });
-            bindSocketEvents();
+            openSocketConnection(currentSocketUrl);
         }).catch(function(error) {
             handleInitializationError(error);
         });
