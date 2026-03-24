@@ -65,6 +65,7 @@
     let sessionExpiresAt = null;
     let lastInteractionAt = Date.now();
     let generatedNonces = [];
+    let operatorConnectionNotified = false;
 
     function getScriptTag() {
         return document.currentScript || document.querySelector('script[src*="chat-plugin"]');
@@ -317,6 +318,33 @@
         row.innerHTML = '<span style="display:inline-block;max-width:82%;padding:10px 14px;border-radius:16px;box-shadow:0 2px 10px rgba(0,0,0,.06);background:' + (type === 'sent' ? config.primaryColor : '#fff') + ';color:' + (type === 'sent' ? '#fff' : '#0f172a') + ';word-break:break-word;">' + content + '</span>';
         messagesEl.insertBefore(row, typingEl);
         messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function normalizeInboundFileUrl(rawPath) {
+        const value = String(rawPath || '').trim();
+        if (!value) return '';
+        if (/^https?:\/\//i.test(value)) return value;
+        return value.charAt(0) === '/' ? value : ('/' + value.replace(/^\/+/, ''));
+    }
+
+    function inferAttachmentName(msg, fallbackUrl) {
+        const provided = String((msg && (msg.message || msg.content)) || '').trim();
+        if (provided) return provided;
+        const cleaned = String(fallbackUrl || '').split('?')[0];
+        const parts = cleaned.split('/');
+        return parts.length ? (parts[parts.length - 1] || 'Attachment') : 'Attachment';
+    }
+
+    function markOperatorConnected(operatorName, announce) {
+        const name = String(operatorName || 'Operator');
+        operatorAccepted = true;
+        setInputEnabled(true);
+        hideSessionNotice();
+        setStatus('Connected to ' + name, 'success');
+        if (announce && !operatorConnectionNotified) {
+            appendSystemMessage(name + ' is online.');
+            operatorConnectionNotified = true;
+        }
     }
 
     function setStatus(text, tone) {
@@ -729,6 +757,7 @@
     function resetConnectionState() {
         isAuthenticated = false;
         operatorAccepted = false;
+        operatorConnectionNotified = false;
         setInputEnabled(false);
     }
 
@@ -845,11 +874,11 @@
         socket.on('request_accepted', function(evt) {
             if (!evt) return;
             if (String(evt.application_id || evt.id || '') !== String(config.applicationId)) return;
-            operatorAccepted = true;
-            setInputEnabled(true);
-            hideSessionNotice();
-            setStatus('Connected to ' + (evt.operator_name || 'Operator'), 'success');
-            appendSystemMessage((evt.operator_name || 'An operator') + ' accepted your request.');
+            markOperatorConnected(evt.operator_name || 'Operator', false);
+            if (!operatorConnectionNotified) {
+                appendSystemMessage((evt.operator_name || 'An operator') + ' accepted your request.');
+                operatorConnectionNotified = true;
+            }
         });
 
         socket.on('application_completed', function(evt) {
@@ -865,8 +894,11 @@
             if (!msg) return;
             if (String(msg.source_id || '') !== String(config.applicationId)) return;
             if (msg.sender_type === 'end_user') return;
-            if (msg.attachment_url) {
-                appendAttachmentMessage(msg.attachment_url, msg.message || 'Attachment', 'received');
+            markOperatorConnected(msg.sender_name || 'Operator', false);
+
+            const attachmentUrl = normalizeInboundFileUrl(msg.attachment_url || msg.file_path || '');
+            if (attachmentUrl) {
+                appendAttachmentMessage(attachmentUrl, inferAttachmentName(msg, attachmentUrl), 'received');
             } else {
                 appendMessage(msg.message || msg.content || '', 'received');
             }
