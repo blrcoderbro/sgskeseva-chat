@@ -8,7 +8,9 @@
 
     const defaults = {
         apiEndpoint: 'https://sgskeseva.com/api/partner',
+        apiKey: null,
         applicationId: null,
+        applicationIdB64: null,
         embedToken: null,
         userName: 'Website Visitor',
         theme: 'light',
@@ -77,7 +79,9 @@
 
         return {
             apiEndpoint: script.getAttribute('data-api-endpoint'),
+            apiKey: script.getAttribute('data-api-key'),
             applicationId: script.getAttribute('data-application-id'),
+            applicationIdB64: script.getAttribute('data-application-id-b64'),
             embedToken: script.getAttribute('data-embed-token'),
             userName: script.getAttribute('data-user-name'),
             theme: script.getAttribute('data-theme'),
@@ -93,10 +97,49 @@
         };
     }
 
+    function base64UrlEncode(value) {
+        try {
+            return btoa(unescape(encodeURIComponent(value))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+        } catch (error) {
+            return '';
+        }
+    }
+
+    function base64UrlDecode(value) {
+        try {
+            let normalized = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
+            while (normalized.length % 4) normalized += '=';
+            return decodeURIComponent(escape(atob(normalized)));
+        } catch (error) {
+            return '';
+        }
+    }
+
+    function encodeApplicationIdB64(applicationId) {
+        const id = parseInt(applicationId, 10);
+        if (!id || id <= 0) return null;
+        return 'app_' + base64UrlEncode('app:' + String(id));
+    }
+
+    function decodeApplicationIdB64(applicationIdB64) {
+        let encoded = String(applicationIdB64 || '').trim();
+        if (!encoded) return null;
+        if (encoded.indexOf('app_') === 0) {
+            encoded = encoded.slice(4);
+        }
+        const decoded = base64UrlDecode(encoded);
+        const parts = decoded.split(':');
+        if (parts.length !== 2 || parts[0] !== 'app') return null;
+        const id = parseInt(parts[1], 10);
+        return id > 0 ? id : null;
+    }
+
     function normalizeConfig(input) {
         const merged = Object.assign({}, defaults, window.SGSKChatConfig || {}, readDataConfig(), input || {});
 
+        merged.apiKey = merged.apiKey ? String(merged.apiKey).trim() : null;
         merged.applicationId = merged.applicationId ? String(merged.applicationId).trim() : null;
+        merged.applicationIdB64 = merged.applicationIdB64 ? String(merged.applicationIdB64).trim() : null;
         merged.embedToken = merged.embedToken ? String(merged.embedToken).trim() : null;
         merged.userName = merged.userName ? String(merged.userName).trim() : defaults.userName;
         merged.autoLaunch = merged.autoLaunch !== false && merged.autoLaunch !== 'false';
@@ -104,19 +147,32 @@
         merged.tokenExpiryWarningSeconds = Math.max(15, parseInt(merged.tokenExpiryWarningSeconds, 10) || defaults.tokenExpiryWarningSeconds);
         merged.inactivityAutoRefreshSeconds = Math.max(30, parseInt(merged.inactivityAutoRefreshSeconds, 10) || defaults.inactivityAutoRefreshSeconds);
 
+        if (!merged.applicationIdB64 && merged.applicationId) {
+            merged.applicationIdB64 = encodeApplicationIdB64(merged.applicationId);
+        }
+
+        if ((!merged.applicationId || String(merged.applicationId).trim() === '') && merged.applicationIdB64) {
+            const decodedId = decodeApplicationIdB64(merged.applicationIdB64);
+            if (decodedId) {
+                merged.applicationId = String(decodedId);
+            }
+        }
+
         return merged;
     }
 
     function ensureRequiredConfig(nextConfig) {
-        const missing = [];
-        if (!nextConfig.applicationId) missing.push('data-application-id');
-        if (!nextConfig.embedToken) missing.push('data-embed-token');
-
-        if (missing.length) {
-            const message = 'Missing required chat setup: ' + missing.join(', ') + '. Add both attributes to the chat script tag and generate an embed token from the partner portal. Setup help: ' + nextConfig.docsUrl;
+        const modernModeReady = !!(nextConfig.apiKey && nextConfig.applicationIdB64);
+        const legacyModeReady = !!(nextConfig.applicationId && nextConfig.embedToken);
+        if (!modernModeReady && !legacyModeReady) {
+            const message = 'Missing required chat setup. Preferred: data-api-key + data-application-id-b64. Legacy: data-application-id + data-embed-token. Setup help: ' + nextConfig.docsUrl;
             const error = new Error(message);
             error.type = TOKEN_ERROR_TYPES.config;
             throw error;
+        }
+
+        if (legacyModeReady && !modernModeReady) {
+            console.warn('[SGSK Chat] Legacy embed-token initialization is deprecated. Use data-api-key + data-application-id-b64.');
         }
     }
 
@@ -370,7 +426,7 @@
     }
 
     function isTokenRefreshAllowed() {
-        return !!(config && config.applicationId && config.embedToken);
+        return !!(config && config.applicationId && (config.embedToken || (config.apiKey && config.applicationIdB64)));
     }
 
     function open() {
@@ -511,13 +567,22 @@
     }
 
     function fetchChatToken() {
-        const body = {
-            application_id: Number(config.applicationId),
-            embed_token: config.embedToken,
-            proof_nonce: generateNonce()
-        };
+        const useModernBootstrap = !!(config.apiKey && config.applicationIdB64 && !config.embedToken);
+        const endpoint = useModernBootstrap ? '/bootstrap_chat' : '/generate_chat_token';
+        const body = useModernBootstrap
+            ? {
+                api_key: config.apiKey,
+                application_id_b64: config.applicationIdB64,
+                proof_nonce: generateNonce()
+            }
+            : {
+                application_id_b64: config.applicationIdB64,
+                application_id: Number(config.applicationId),
+                embed_token: config.embedToken,
+                proof_nonce: generateNonce()
+            };
 
-        return fetch(config.apiEndpoint.replace(/\/$/, '') + '/generate_chat_token', {
+        return fetch(config.apiEndpoint.replace(/\/$/, '') + endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body)
@@ -543,7 +608,8 @@
                 throw createFriendlyError((data && data.message) || 'Unable to start chat right now.', TOKEN_ERROR_TYPES.server, true);
             }
 
-            if (!data.success || !data.data || !data.data.token) {
+            const tokenValue = (data && data.data && (data.data.token || data.data.chat_token)) || '';
+            if (!data.success || !data.data || !tokenValue) {
                 throw createFriendlyError((data && data.message) || 'Unable to create a secure chat session.', TOKEN_ERROR_TYPES.server, true);
             }
 
@@ -551,6 +617,17 @@
                 throw createFriendlyError('Unable to connect. Please refresh the page or contact support.', TOKEN_ERROR_TYPES.invalidWebsocketUrl, true);
             }
 
+            data.data.token = tokenValue;
+            if (!data.data.application_id_b64 && config.applicationIdB64) {
+                data.data.application_id_b64 = config.applicationIdB64;
+            }
+            if ((!config.applicationId || String(config.applicationId).trim() === '') && data.data.application_id) {
+                config.applicationId = String(data.data.application_id);
+            }
+            if ((!config.applicationId || String(config.applicationId).trim() === '') && data.data.application_id_b64) {
+                const decoded = decodeApplicationIdB64(data.data.application_id_b64);
+                if (decoded) config.applicationId = String(decoded);
+            }
             return data.data;
         }).catch(function(error) {
             if (error && error.type) {
@@ -562,11 +639,14 @@
 
     function fetchChatHistory() {
         const tokenParam = sessionToken || config.embedToken || '';
-        if (!tokenParam || !config.applicationId) {
+        if (!tokenParam || (!config.applicationId && !config.applicationIdB64)) {
             return Promise.resolve([]);
         }
 
-        const url = config.apiEndpoint.replace(/\/$/, '') + '/chat_history?application_id=' + encodeURIComponent(config.applicationId) + '&token=' + encodeURIComponent(tokenParam);
+        const appQuery = config.applicationIdB64
+            ? 'application_id_b64=' + encodeURIComponent(config.applicationIdB64)
+            : 'application_id=' + encodeURIComponent(config.applicationId);
+        const url = config.apiEndpoint.replace(/\/$/, '') + '/chat_history?' + appQuery + '&token=' + encodeURIComponent(tokenParam);
 
         return fetch(url, { method: 'GET' })
             .then(function(res) {
@@ -965,7 +1045,9 @@
 
     function autoInitIfConfigured() {
         const merged = normalizeConfig();
-        if (!merged.applicationId || !merged.embedToken) {
+        const modernModeReady = !!(merged.apiKey && merged.applicationIdB64);
+        const legacyModeReady = !!(merged.applicationId && merged.embedToken);
+        if (!modernModeReady && !legacyModeReady) {
             return;
         }
 
@@ -1034,10 +1116,13 @@
                 isAuthenticated: isAuthenticated,
                 operatorAccepted: operatorAccepted,
                 applicationId: config && config.applicationId ? config.applicationId : null,
+                applicationIdB64: config && config.applicationIdB64 ? config.applicationIdB64 : null,
                 websocketUrl: currentSocketUrl,
                 sessionExpiresAt: sessionExpiresAt
             };
-        }
+        },
+        encodeApplicationIdB64: encodeApplicationIdB64,
+        decodeApplicationIdB64: decodeApplicationIdB64
     };
 
     window.SGSKChat = window.ChatWidget;
