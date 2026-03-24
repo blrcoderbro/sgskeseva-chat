@@ -279,6 +279,11 @@
         });
         document.getElementById('sgsk-file-input').addEventListener('change', handleFileSelect);
         inputEl.addEventListener('input', trackInteraction);
+        inputEl.addEventListener('keydown', function(event) {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                sendMessage(event);
+            }
+        });
     }
 
     function appendSystemMessage(text) {
@@ -324,7 +329,13 @@
         const value = String(rawPath || '').trim();
         if (!value) return '';
         if (/^https?:\/\//i.test(value)) return value;
-        return value.charAt(0) === '/' ? value : ('/' + value.replace(/^\/+/, ''));
+        const normalizedPath = value.charAt(0) === '/' ? value : ('/' + value.replace(/^\/+/, ''));
+        try {
+            const apiBase = new URL(config.apiEndpoint);
+            return apiBase.origin + normalizedPath;
+        } catch (error) {
+            return normalizedPath;
+        }
     }
 
     function inferAttachmentName(msg, fallbackUrl) {
@@ -722,10 +733,11 @@
 
         messages.forEach(function(msg) {
             const type = msg.role === 'user' ? 'sent' : 'received';
-            if (msg.attachment_url && typeof appendAttachmentMessage === 'function') {
-                appendAttachmentMessage(msg.attachment_url, msg.message, type);
+            const attachmentUrl = normalizeInboundFileUrl(msg.attachment_url || msg.file_path || '');
+            if (attachmentUrl && typeof appendAttachmentMessage === 'function') {
+                appendAttachmentMessage(attachmentUrl, msg.message, type);
             } else {
-                appendMessage(msg.message || (msg.attachment_url ? '[Attachment]' : ''), type);
+                appendMessage(msg.message || (attachmentUrl ? '[Attachment]' : ''), type);
             }
         });
 
@@ -962,7 +974,9 @@
     }
 
     function sendMessage(event) {
-        event.preventDefault();
+        if (event && typeof event.preventDefault === 'function') {
+            event.preventDefault();
+        }
         trackInteraction();
         const message = inputEl.value.trim();
         if (!message || !socket || !isAuthenticated || !operatorAccepted) return;
@@ -1040,7 +1054,7 @@
                     errorEl.style.display = 'block';
                     return;
                 }
-                appendAttachmentMessage(uploadData.url, file.name, 'sent');
+                appendAttachmentMessage(normalizeInboundFileUrl(uploadData.url), file.name, 'sent');
             });
         }).catch(function(err) {
             errorEl.textContent = err.message || 'Failed to upload file';
