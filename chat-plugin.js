@@ -1,8 +1,6 @@
 /**
  * SGSK LiveChat Plugin
- * Partner chat widget runtime.
- * Preferred init: data-api-key + data-application-id-b64.
- * Compatibility init: data-application-id + data-embed-token.
+ * Embed-token-only widget runtime for partner application chat.
  */
 
 (function() {
@@ -14,7 +12,7 @@
         applicationId: null,
         applicationIdB64: null,
         embedToken: null,
-        userName: 'Visitor',
+        userName: 'Website Visitor',
         theme: 'light',
         title: 'Application Support',
         subtitle: 'We reply within minutes',
@@ -167,7 +165,7 @@
         const modernModeReady = !!(nextConfig.apiKey && nextConfig.applicationIdB64);
         const legacyModeReady = !!(nextConfig.applicationId && nextConfig.embedToken);
         if (!modernModeReady && !legacyModeReady) {
-            const message = 'Missing required chat attributes. Use data-api-key + data-application-id-b64, or compatibility mode data-application-id + data-embed-token. Docs: ' + nextConfig.docsUrl;
+            const message = 'Missing required chat setup. Preferred: data-api-key + data-application-id-b64. Legacy: data-application-id + data-embed-token. Setup help: ' + nextConfig.docsUrl;
             const error = new Error(message);
             error.type = TOKEN_ERROR_TYPES.config;
             throw error;
@@ -205,11 +203,11 @@
                     </div>
                     <button id="sgsk-close-chat" type="button" style="background:none;border:none;color:#fff;font-size:24px;cursor:pointer;line-height:1;">&times;</button>
                 </div>
-                <div id="sgsk-chat-status" class="sgsk-chat-status-bar" style="padding:10px 14px;background:#eff6ff;color:#1d4ed8;font-size:12px;border-bottom:1px solid #dbeafe;">Session not started</div>
+                <div id="sgsk-chat-status" class="sgsk-chat-status-bar" style="padding:10px 14px;background:#eff6ff;color:#1d4ed8;font-size:12px;border-bottom:1px solid #dbeafe;">Ready to connect</div>
                 <div id="sgsk-chat-session-notice" style="display:none;padding:10px 14px;background:#fffbeb;color:#92400e;font-size:12px;border-bottom:1px solid #fde68a;"></div>
                 <div id="sgsk-chat-messages" style="flex:1;overflow-y:auto;padding:16px;background:#f8fafc;">
                     <div style="text-align:center;margin:8px 0 18px;">
-                        <div style="display:inline-block;background:#fff;border-radius:12px;padding:12px 14px;color:#334155;box-shadow:0 2px 10px rgba(0,0,0,.06);">${escapeHtml('Open chat to start a secure session for this application.')}</div>
+                        <div style="display:inline-block;background:#fff;border-radius:12px;padding:12px 14px;color:#334155;box-shadow:0 2px 10px rgba(0,0,0,.06);">${escapeHtml(config.theme === 'light' ? 'Open chat to connect to your application operator.' : 'Open chat to connect to your application operator.')}</div>
                     </div>
                     <div id="sgsk-typing-indicator" style="display:none;margin:8px 0 0 0;">
                         <div style="display:inline-block;background:#fff;border-radius:14px;padding:10px 12px;box-shadow:0 2px 10px rgba(0,0,0,.06);color:#64748b;font-size:12px;">Operator is typing...</div>
@@ -222,7 +220,7 @@
                         <button id="sgsk-attach-btn" type="button" style="border:none;background:none;cursor:pointer;padding:4px 6px;color:#64748b;flex-shrink:0;" title="Attach file">
                             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.49"/></svg>
                         </button>
-                        <input id="sgsk-chat-input" type="text" placeholder="Operator not connected yet" disabled style="flex:1;padding:11px 14px;border:1px solid #cbd5e1;border-radius:999px;outline:none;font-size:14px;background:#f8fafc;" />
+                        <input id="sgsk-chat-input" type="text" placeholder="Waiting for operator..." disabled style="flex:1;padding:11px 14px;border:1px solid #cbd5e1;border-radius:999px;outline:none;font-size:14px;background:#f8fafc;" />
                         <button id="sgsk-chat-send" type="submit" disabled style="border:none;background:${config.primaryColor};color:#fff;border-radius:999px;padding:11px 16px;cursor:pointer;opacity:.55;">
                             Send
                         </button>
@@ -357,7 +355,7 @@
         inputEl.disabled = !enabled;
         sendButton.disabled = !enabled;
         sendButton.style.opacity = enabled ? '1' : '.55';
-        inputEl.placeholder = enabled ? 'Type a message...' : 'Operator not connected yet';
+        inputEl.placeholder = enabled ? 'Type a message...' : 'Waiting for operator...';
         inputEl.style.background = enabled ? '#fff' : '#f8fafc';
         if (attachBtn) {
             attachBtn.disabled = !enabled;
@@ -795,7 +793,7 @@
             clearReconnectTimer();
             hideRefreshAction();
             hideSessionNotice();
-            setStatus('Connected. Waiting for operator assignment.', 'info');
+            setStatus('Connected to chat service. Waiting for operator status...', 'info');
             if (!historyLoaded) {
                 fetchChatHistory().then(function(messages) {
                     historyLoaded = true;
@@ -1026,7 +1024,7 @@
         setInputEnabled(false);
         hideSessionNotice();
         hideRefreshAction();
-        setStatus('Chat widget initialized for this application.', 'info');
+        setStatus('Ready to connect to this application', 'info');
         initialized = true;
         return window.ChatWidget;
     }
