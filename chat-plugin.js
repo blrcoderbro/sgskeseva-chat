@@ -192,7 +192,7 @@
         widget.id = 'sgsk-chat-widget';
         widget.innerHTML = `
             <div id="sgsk-chat-button" style="position:fixed;bottom:20px;${isLeft ? 'left' : 'right'}:20px;z-index:999999;cursor:pointer;">
-                <div style="width:60px;height:60px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,${config.primaryColor},${config.secondaryColor});box-shadow:0 8px 24px rgba(0,0,0,.18);">
+                <div class="sgsk-launch-button-inner" style="width:60px;height:60px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,${config.primaryColor},${config.secondaryColor});box-shadow:0 8px 32px rgba(0,0,0,.12);transition:all .2s ease-out;position:relative;">
                     <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
                 </div>
                 <div id="sgsk-unread-badge" style="display:none;position:absolute;top:-6px;${isLeft ? 'right' : 'left'}:-6px;min-width:22px;height:22px;padding:0 6px;border-radius:999px;background:#ef4444;color:#fff;font:700 12px/22px Arial,sans-serif;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,.18);">0</div>
@@ -231,12 +231,49 @@
                 </div>
             </div>
             <style>
-                #sgsk-chat-button:hover { transform: scale(1.04); transition: transform .18s ease; }
+                #sgsk-chat-button .sgsk-launch-button-inner:hover { transform: scale(1.05); box-shadow: 0 12px 40px rgba(99, 102, 241, .5); }
+                #sgsk-chat-button .sgsk-launch-button-inner { animation: sgsk-pulse-ring 2s ease-out infinite; }
+                @keyframes sgsk-pulse-ring {
+                    0% { box-shadow: 0 8px 32px rgba(0, 0, 0, .12); }
+                    50% { box-shadow: 0 8px 40px rgba(99, 102, 241, .3); }
+                    100% { box-shadow: 0 8px 32px rgba(0, 0, 0, .12); }
+                }
+                #sgsk-close-chat:hover { background: rgba(255,255,255,.15); }
+                #sgsk-chat-window { animation: sgsk-slide-in .3s ease-out; }
+                @keyframes sgsk-slide-in {
+                    from { opacity: 0; transform: translateY(20px) scale(.95); }
+                    to { opacity: 1; transform: translateY(0) scale(1); }
+                }
+                #sgsk-chat-input:focus { border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99, 102, 241, .1); }
+                #sgsk-chat-send:not(:disabled):hover { transform: translateY(-1px); box-shadow: 0 4px 14px rgba(99, 102, 241, .4); }
+                #sgsk-attach-btn:hover { background: #f1f5f9; color: #475569; }
                 #sgsk-chat-messages::-webkit-scrollbar { width: 6px; }
                 #sgsk-chat-messages::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 999px; }
-                @keyframes sgsk-pulse {
-                    0%, 100% { opacity: 1; }
-                    50% { opacity: 0.4; }
+                .sgsk-message-row.sent .sgsk-message-bubble { border-radius: 12px 12px 4px 12px; }
+                .sgsk-message-row.received .sgsk-message-bubble { border-radius: 12px 12px 12px 4px; }
+                .sgsk-typing-bubble span { animation: sgsk-typing-dot 1.4s infinite ease-in-out both; }
+                .sgsk-typing-bubble span:nth-child(1) { animation-delay: -0.32s; }
+                .sgsk-typing-bubble span:nth-child(2) { animation-delay: -0.16s; }
+                .sgsk-typing-bubble span:nth-child(3) { animation-delay: 0s; }
+                @keyframes sgsk-typing-dot {
+                    0%, 80%, 100% { transform: scale(.6); opacity: .5; }
+                    40% { transform: scale(1); opacity: 1; }
+                }
+                @media (max-width: 768px) {
+                    #sgsk-chat-window {
+                        width: 100%;
+                        max-width: none;
+                        height: 100vh;
+                        max-height: none;
+                        bottom: 0;
+                        right: 0;
+                        left: 0;
+                        border-radius: 0;
+                    }
+                    #sgsk-chat-button {
+                        bottom: 16px;
+                        right: 16px;
+                    }
                 }
                 @keyframes sgsk-slide-up {
                     from { transform: translateY(8px); opacity: 0; }
@@ -298,8 +335,24 @@
     function appendMessage(text, type) {
         if (!messagesEl) return;
         const row = document.createElement('div');
+        row.className = 'sgsk-message-row ' + type;
         row.style.cssText = 'margin:10px 0;text-align:' + (type === 'sent' ? 'right' : 'left') + ';';
-        row.innerHTML = '<span style="display:inline-block;max-width:82%;padding:10px 14px;border-radius:16px;box-shadow:0 2px 10px rgba(0,0,0,.06);background:' + (type === 'sent' ? config.primaryColor : '#fff') + ';color:' + (type === 'sent' ? '#fff' : '#0f172a') + ';word-break:break-word;">' + escapeHtml(text) + '</span>';
+        const bubble = document.createElement('div');
+        bubble.className = 'sgsk-message-bubble';
+        bubble.style.cssText = 'display:inline-block;max-width:82%;padding:10px 14px;word-break:break-word;';
+        if (type === 'sent') {
+            bubble.style.background = 'linear-gradient(135deg, #6366f1 0%,  #4f46e5 100%)';
+            bubble.style.color = 'white';
+            bubble.style.boxShadow = '0 2px 8px rgba(99, 102, 241, 0.3)';
+            bubble.style.borderRadius = '12px 12px 4px 12px';
+        } else {
+            bubble.style.background = '#fff';
+            bubble.style.color = '#0f172a';
+            bubble.style.boxShadow = '0 2px 8px rgba(0, 0, 0, 0.08)';
+            bubble.style.borderRadius = '12px 12px 12px 4px';
+        }
+        bubble.textContent = text;
+        row.appendChild(bubble);
         messagesEl.insertBefore(row, typingEl);
         messagesEl.scrollTop = messagesEl.scrollHeight;
     }
@@ -307,6 +360,7 @@
     function appendAttachmentMessage(url, filename, type) {
         if (!messagesEl) return;
         const row = document.createElement('div');
+        row.className = 'sgsk-message-row ' + type;
         row.style.cssText = 'margin:10px 0;text-align:' + (type === 'sent' ? 'right' : 'left') + ';';
 
         const isImage = /\.(jpg|jpeg|png|gif|webp)(\?|$)/i.test(String(url || ''));
@@ -320,7 +374,22 @@
                 + '<span style="text-decoration:underline;">' + escapeHtml(filename || 'Attachment') + '</span></a>';
         }
 
-        row.innerHTML = '<span style="display:inline-block;max-width:82%;padding:10px 14px;border-radius:16px;box-shadow:0 2px 10px rgba(0,0,0,.06);background:' + (type === 'sent' ? config.primaryColor : '#fff') + ';color:' + (type === 'sent' ? '#fff' : '#0f172a') + ';word-break:break-word;">' + content + '</span>';
+        const bubble = document.createElement('div');
+        bubble.className = 'sgsk-message-bubble';
+        bubble.style.cssText = 'display:inline-block;max-width:82%;padding:10px 14px;word-break:break-word;';
+        if (type === 'sent') {
+            bubble.style.background = 'linear-gradient(135deg, #6366f1 0%,  #4f46e5 100%)';
+            bubble.style.color = 'white';
+            bubble.style.boxShadow = '0 2px 8px rgba(99, 102, 241, 0.3)';
+            bubble.style.borderRadius = '12px 12px 4px 12px';
+        } else {
+            bubble.style.background = '#fff';
+            bubble.style.color = '#0f172a';
+            bubble.style.boxShadow = '0 2px 8px rgba(0, 0, 0, 0.08)';
+            bubble.style.borderRadius = '12px 12px 12px 4px';
+        }
+        bubble.innerHTML = content;
+        row.appendChild(bubble);
         messagesEl.insertBefore(row, typingEl);
         messagesEl.scrollTop = messagesEl.scrollHeight;
     }
