@@ -210,7 +210,6 @@
                 <div style="padding:16px;background:linear-gradient(135deg,${config.primaryColor},${config.secondaryColor});color:#fff;display:flex;align-items:center;justify-content:space-between;gap:10px;">
                     <div>
                         <div style="font-size:16px;font-weight:700;">${escapeHtml(config.title || config.companyName)}</div>
-                        <div style="font-size:12px;opacity:.9;">${escapeHtml(config.subtitle)}</div>
                     </div>
                     <button id="sgsk-close-chat" type="button" style="background:none;border:none;color:#fff;font-size:24px;cursor:pointer;line-height:1;">&times;</button>
                 </div>
@@ -401,7 +400,7 @@
         let content = '';
 
         if (isImage) {
-            const linkUrl = normalizedUrl || imageSrc;
+            const linkUrl = (/^(blob:|data:image\/)/i.test(imageSrc) ? imageSrc : (normalizedUrl || imageSrc));
             content = '<a href="' + escapeHtml(linkUrl) + '" target="_blank" rel="noopener"><img src="' + escapeHtml(imageSrc) + '" alt="' + escapeHtml(filename || 'Attachment') + '" style="max-width:180px;max-height:180px;border-radius:8px;display:block;" /></a>';
         } else {
             const docHref = normalizedUrl || '#';
@@ -1153,10 +1152,7 @@
             if (!evt) return;
             if (String(evt.application_id || evt.id || '') !== String(config.applicationId)) return;
             markOperatorConnected(evt.operator_name || 'Operator', false);
-            if (!operatorConnectionNotified) {
-                appendSystemMessage((evt.operator_name || 'An operator') + ' accepted your request.');
-                operatorConnectionNotified = true;
-            }
+            operatorConnectionNotified = true;
         });
 
         socket.on('application_completed', function(evt) {
@@ -1294,7 +1290,8 @@
 
     function readAttachmentDataBase64(file) {
         return new Promise(function(resolve) {
-            if (!file || file.size > (1536 * 1024)) {
+            // Keep websocket payload compact; URL upload remains the source of truth.
+            if (!file || file.size > (220 * 1024)) {
                 resolve('');
                 return;
             }
