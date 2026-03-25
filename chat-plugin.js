@@ -66,6 +66,15 @@
     let lastInteractionAt = Date.now();
     let generatedNonces = [];
     let operatorConnectionNotified = false;
+    let waitingSinceAt = 0;
+    let waitingEtaTimer = null;
+    let waitingQueueBeforeCount = null;
+    let waitingEtaMinMinutes = null;
+    let waitingEtaMaxMinutes = null;
+    let statusPollTimer = null;
+    let statusEventKey = '';
+    let userTypingActive = false;
+    let userTypingIdleTimer = null;
 
     function getScriptTag() {
         return document.currentScript || document.querySelector('script[src*="chat-plugin"]');
@@ -315,7 +324,15 @@
             document.getElementById('sgsk-file-input').click();
         });
         document.getElementById('sgsk-file-input').addEventListener('change', handleFileSelect);
-        inputEl.addEventListener('input', trackInteraction);
+        inputEl.addEventListener('input', function() {
+            trackInteraction();
+            if (!inputEl) return;
+            if (String(inputEl.value || '').trim()) emitUserTyping();
+            else emitUserStopTyping();
+        });
+        inputEl.addEventListener('blur', function() {
+            emitUserStopTyping();
+        });
         inputEl.addEventListener('keydown', function(event) {
             if (event.key === 'Enter' && !event.shiftKey) {
                 sendMessage(event);
@@ -323,13 +340,24 @@
         });
     }
 
-    function appendSystemMessage(text) {
+    function appendSystemMessage(text, options) {
         if (!messagesEl) return;
         const el = document.createElement('div');
         el.style.cssText = 'margin:10px 0;text-align:center;font-size:12px;color:#64748b;';
         el.textContent = text;
+        if (options && options.key) {
+            el.setAttribute('data-system-key', String(options.key));
+        }
         messagesEl.appendChild(el);
         messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function clearSystemMessageByKey(key) {
+        if (!messagesEl || !key) return;
+        const nodes = messagesEl.querySelectorAll('[data-system-key="' + String(key) + '"]');
+        for (let i = 0; i < nodes.length; i += 1) {
+            nodes[i].remove();
+        }
     }
 
     function appendMessage(text, type) {
@@ -357,19 +385,27 @@
         messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
-    function appendAttachmentMessage(url, filename, type) {
+    function appendAttachmentMessage(url, filename, type, previewDataUrl, attachmentDataBase64) {
         if (!messagesEl) return;
         const row = document.createElement('div');
         row.className = 'sgsk-message-row ' + type;
         row.style.cssText = 'margin:10px 0;text-align:' + (type === 'sent' ? 'right' : 'left') + ';';
 
-        const isImage = /\.(jpg|jpeg|png|gif|webp)(\?|$)/i.test(String(url || ''));
+        const normalizedPreview = String(previewDataUrl || '').trim();
+        const normalizedAttachmentData = String(attachmentDataBase64 || '').trim();
+        const normalizedUrl = String(url || '').trim();
+        const decodedPreviewImage = decodeImageDataUrlToBlobUrl(normalizedPreview);
+        const decodedAttachmentImage = decodeImageDataUrlToBlobUrl(normalizedAttachmentData);
+        const imageSrc = decodedPreviewImage || decodedAttachmentImage || normalizedUrl;
+        const isImage = Boolean(decodedPreviewImage || decodedAttachmentImage) || /\.(jpg|jpeg|png|gif|webp|bmp)(\?|$)/i.test(normalizedUrl);
         let content = '';
 
         if (isImage) {
-            content = '<a href="' + escapeHtml(url) + '" target="_blank" rel="noopener"><img src="' + escapeHtml(url) + '" alt="' + escapeHtml(filename || 'Attachment') + '" style="max-width:180px;max-height:180px;border-radius:8px;display:block;" /></a>';
+            const linkUrl = normalizedUrl || imageSrc;
+            content = '<a href="' + escapeHtml(linkUrl) + '" target="_blank" rel="noopener"><img src="' + escapeHtml(imageSrc) + '" alt="' + escapeHtml(filename || 'Attachment') + '" style="max-width:180px;max-height:180px;border-radius:8px;display:block;" /></a>';
         } else {
-            content = '<a href="' + escapeHtml(url) + '" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;text-decoration:none;color:inherit;">'
+            const docHref = normalizedUrl || '#';
+            content = '<a href="' + escapeHtml(docHref) + '" target="_blank" rel="noopener" download="' + escapeHtml(filename || 'attachment') + '" style="display:inline-flex;align-items:center;gap:6px;text-decoration:none;color:inherit;">'
                 + '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>'
                 + '<span style="text-decoration:underline;">' + escapeHtml(filename || 'Attachment') + '</span></a>';
         }
@@ -394,11 +430,42 @@
         messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
+    function decodeImageDataUrlToBlobUrl(dataUrl) {
+        const value = String(dataUrl || '').trim();
+        if (!/^data:image\/[a-z0-9.+-]+;base64,/i.test(value)) return '';
+        const commaIndex = value.indexOf(',');
+        if (commaIndex < 0) return '';
+        const mimeMatch = value.match(/^data:(image\/[a-z0-9.+-]+);base64,/i);
+        const mimeType = mimeMatch && mimeMatch[1] ? mimeMatch[1] : 'image/png';
+        const base64Part = value.slice(commaIndex + 1);
+        try {
+            const binary = atob(base64Part);
+            const len = binary.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i += 1) {
+                bytes[i] = binary.charCodeAt(i);
+            }
+            return URL.createObjectURL(new Blob([bytes], { type: mimeType }));
+        } catch (error) {
+            return '';
+        }
+    }
+
     function normalizeInboundFileUrl(rawPath) {
         const value = String(rawPath || '').trim();
         if (!value) return '';
+        if (/^data:image\//i.test(value)) return value;
         if (/^https?:\/\//i.test(value)) return value;
-        const normalizedPath = value.charAt(0) === '/' ? value : ('/' + value.replace(/^\/+/, ''));
+        // Recover from legacy server payloads that mistakenly include filesystem paths.
+        const unixMarker = value.indexOf('/assets/');
+        const winMarker = value.toLowerCase().indexOf('\\assets\\');
+        let cleanValue = value;
+        if (unixMarker >= 0) {
+            cleanValue = value.slice(unixMarker);
+        } else if (winMarker >= 0) {
+            cleanValue = value.slice(winMarker).replace(/\\/g, '/');
+        }
+        const normalizedPath = cleanValue.charAt(0) === '/' ? cleanValue : ('/' + cleanValue.replace(/^\/+/, ''));
         try {
             const apiBase = new URL(config.apiEndpoint);
             return apiBase.origin + normalizedPath;
@@ -418,6 +485,9 @@
     function markOperatorConnected(operatorName, announce) {
         const name = String(operatorName || 'Operator');
         operatorAccepted = true;
+        stopWaitingEta();
+        stopStatusPolling();
+        clearSystemMessageByKey('chat-opening');
         setInputEnabled(true);
         hideSessionNotice();
         setStatus('Connected to ' + name, 'success');
@@ -803,8 +873,10 @@
         messages.forEach(function(msg) {
             const type = msg.role === 'user' ? 'sent' : 'received';
             const attachmentUrl = normalizeInboundFileUrl(msg.attachment_url || msg.file_path || '');
-            if (attachmentUrl && typeof appendAttachmentMessage === 'function') {
-                appendAttachmentMessage(attachmentUrl, msg.message, type);
+            const previewData = normalizeInboundFileUrl(msg.attachment_preview_data || '');
+            const attachmentDataBase64 = String(msg.attachment_data_base64 || '').trim();
+            if ((attachmentUrl || previewData || attachmentDataBase64) && typeof appendAttachmentMessage === 'function') {
+                appendAttachmentMessage(attachmentUrl || previewData || attachmentDataBase64, msg.message, type, previewData, attachmentDataBase64);
             } else {
                 appendMessage(msg.message || (attachmentUrl ? '[Attachment]' : ''), type);
             }
@@ -835,10 +907,133 @@
         }
     }
 
+    function stopWaitingEta() {
+        if (waitingEtaTimer) {
+            clearInterval(waitingEtaTimer);
+            waitingEtaTimer = null;
+        }
+        waitingSinceAt = 0;
+        waitingQueueBeforeCount = null;
+        waitingEtaMinMinutes = null;
+        waitingEtaMaxMinutes = null;
+    }
+
+    function updateWaitingEtaStatus() {
+        if (!isAuthenticated || operatorAccepted) return;
+        if (
+            waitingQueueBeforeCount !== null &&
+            waitingEtaMinMinutes !== null &&
+            waitingEtaMaxMinutes !== null
+        ) {
+            setStatus(
+                'Finding an operator... Queue before you: ' + waitingQueueBeforeCount + '. Estimated wait: ' + waitingEtaMinMinutes + '-' + waitingEtaMaxMinutes + ' min',
+                'waiting'
+            );
+            return;
+        }
+        const elapsedSec = Math.max(0, Math.floor((Date.now() - waitingSinceAt) / 1000));
+        const elapsedMin = Math.max(1, Math.floor(elapsedSec / 60));
+        setStatus('Finding an operator... Estimating queue (' + elapsedMin + ' min elapsed)', 'waiting');
+    }
+
+    function startWaitingEta() {
+        stopWaitingEta();
+        waitingSinceAt = Date.now();
+        updateWaitingEtaStatus();
+        waitingEtaTimer = window.setInterval(updateWaitingEtaStatus, 5000);
+    }
+
+    function stopStatusPolling() {
+        if (statusPollTimer) {
+            clearInterval(statusPollTimer);
+            statusPollTimer = null;
+        }
+    }
+
+    function pollApplicationStatus() {
+        if (!config || !config.apiKey || !config.applicationIdB64) return;
+        const endpoint = config.apiEndpoint.replace(/\/$/, '') + '/application_status';
+        fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                api_key: config.apiKey,
+                application_id_b64: config.applicationIdB64
+            })
+        }).then(function(res) {
+            if (!res.ok) return null;
+            return res.json().catch(function() { return null; });
+        }).then(function(payload) {
+            if (!payload || !payload.success || !payload.data) return;
+            const queueBeforeRaw = parseInt(payload.data.queue_before_count, 10);
+            const etaMinRaw = parseInt(payload.data.estimated_wait_min_minutes, 10);
+            const etaMaxRaw = parseInt(payload.data.estimated_wait_max_minutes, 10);
+            if (!isNaN(queueBeforeRaw)) waitingQueueBeforeCount = Math.max(0, queueBeforeRaw);
+            if (!isNaN(etaMinRaw)) waitingEtaMinMinutes = Math.max(0, etaMinRaw);
+            if (!isNaN(etaMaxRaw)) waitingEtaMaxMinutes = Math.max(0, etaMaxRaw);
+            if (!operatorAccepted) updateWaitingEtaStatus();
+
+            const appStatus = String(payload.data.status || '').toLowerCase();
+            if (!appStatus) return;
+            if (statusEventKey === appStatus) return;
+
+            if (appStatus === 'completed' || appStatus === 'success' || appStatus === 'approved') {
+                statusEventKey = appStatus;
+                clearSystemMessageByKey('txn-status');
+                appendSystemMessage('Transaction status: SUCCESS', { key: 'txn-status' });
+                setStatus('Application completed successfully.', 'completed');
+                setInputEnabled(false);
+                stopWaitingEta();
+                stopStatusPolling();
+            } else if (appStatus === 'rejected' || appStatus === 'failed' || appStatus === 'declined') {
+                statusEventKey = appStatus;
+                clearSystemMessageByKey('txn-status');
+                appendSystemMessage('Transaction status: REJECTED', { key: 'txn-status' });
+                setStatus('Application was rejected.', 'error');
+                setInputEnabled(false);
+                stopWaitingEta();
+                stopStatusPolling();
+            }
+        }).catch(function() {
+        });
+    }
+
+    function startStatusPolling() {
+        stopStatusPolling();
+        pollApplicationStatus();
+        statusPollTimer = window.setInterval(pollApplicationStatus, 12000);
+    }
+
+    function emitUserStopTyping() {
+        if (!socket || !isAuthenticated || !operatorAccepted || !userTypingActive) return;
+        socket.emit('stop_typing');
+        userTypingActive = false;
+    }
+
+    function emitUserTyping() {
+        if (!socket || !isAuthenticated || !operatorAccepted) return;
+        if (!userTypingActive) {
+            socket.emit('typing');
+            userTypingActive = true;
+        }
+        if (userTypingIdleTimer) clearTimeout(userTypingIdleTimer);
+        userTypingIdleTimer = window.setTimeout(function() {
+            emitUserStopTyping();
+        }, 1200);
+    }
+
     function resetConnectionState() {
         isAuthenticated = false;
         operatorAccepted = false;
         operatorConnectionNotified = false;
+        statusEventKey = '';
+        userTypingActive = false;
+        if (userTypingIdleTimer) {
+            clearTimeout(userTypingIdleTimer);
+            userTypingIdleTimer = null;
+        }
+        stopWaitingEta();
+        stopStatusPolling();
         setInputEnabled(false);
     }
 
@@ -937,6 +1132,7 @@
             clearReconnectTimer();
             hideRefreshAction();
             hideSessionNotice();
+            clearSystemMessageByKey('chat-opening');
             setStatus('Connected to chat service. Waiting for operator status...', 'info');
             if (!historyLoaded) {
                 fetchChatHistory().then(function(messages) {
@@ -945,7 +1141,8 @@
                 });
             }
             setInputEnabled(false);
-            setStatus('Finding an operator, please wait...', 'waiting');
+            startWaitingEta();
+            startStatusPolling();
         });
 
         socket.on('auth_error', function() {
@@ -966,9 +1163,35 @@
             if (!evt) return;
             if (String(evt.application_id || evt.id || '') !== String(config.applicationId)) return;
             operatorAccepted = false;
+            stopWaitingEta();
+            stopStatusPolling();
             setInputEnabled(false);
             setStatus('Your application has been processed. Thank you!', 'completed');
             appendSystemMessage('This chat session has ended. Your application has been processed.');
+        });
+
+        socket.on('request_completed', function(evt) {
+            if (!evt) return;
+            if (String(evt.application_id || evt.id || '') !== String(config.applicationId)) return;
+            operatorAccepted = false;
+            stopWaitingEta();
+            stopStatusPolling();
+            clearSystemMessageByKey('txn-status');
+            appendSystemMessage('Transaction status: SUCCESS', { key: 'txn-status' });
+            setInputEnabled(false);
+            setStatus('Your application has been processed. Thank you!', 'completed');
+        });
+
+        socket.on('request_rejected', function(evt) {
+            if (!evt) return;
+            if (String(evt.application_id || evt.id || '') !== String(config.applicationId)) return;
+            operatorAccepted = false;
+            stopWaitingEta();
+            stopStatusPolling();
+            clearSystemMessageByKey('txn-status');
+            appendSystemMessage('Transaction status: REJECTED' + (evt.reason ? (' (' + evt.reason + ')') : ''), { key: 'txn-status' });
+            setInputEnabled(false);
+            setStatus('Your application was rejected.', 'error');
         });
 
         socket.on('new_message', function(msg) {
@@ -978,8 +1201,16 @@
             markOperatorConnected(msg.sender_name || 'Operator', false);
 
             const attachmentUrl = normalizeInboundFileUrl(msg.attachment_url || msg.file_path || '');
-            if (attachmentUrl) {
-                appendAttachmentMessage(attachmentUrl, inferAttachmentName(msg, attachmentUrl), 'received');
+            const previewData = normalizeInboundFileUrl(msg.attachment_preview_data || '');
+            const attachmentDataBase64 = String(msg.attachment_data_base64 || '').trim();
+            if (attachmentUrl || previewData || attachmentDataBase64) {
+                appendAttachmentMessage(
+                    attachmentUrl || previewData || attachmentDataBase64,
+                    inferAttachmentName(msg, attachmentUrl || previewData || attachmentDataBase64),
+                    'received',
+                    previewData,
+                    attachmentDataBase64
+                );
             } else {
                 appendMessage(msg.message || msg.content || '', 'received');
             }
@@ -1025,7 +1256,7 @@
 
         hideRefreshAction();
         setStatus('Preparing secure connection for this application...', 'info');
-        appendSystemMessage('Opening secure chat for application #' + config.applicationId + '...');
+        appendSystemMessage('Opening secure chat for application #' + config.applicationId + '...', { key: 'chat-opening' });
 
         if (!forceRefresh && hasReusableSession()) {
             openSocketConnection(currentSocketUrl);
@@ -1057,6 +1288,24 @@
             }
             appendMessage(message, 'sent');
             inputEl.value = '';
+            emitUserStopTyping();
+        });
+    }
+
+    function readAttachmentDataBase64(file) {
+        return new Promise(function(resolve) {
+            if (!file || file.size > (1536 * 1024)) {
+                resolve('');
+                return;
+            }
+            const reader = new FileReader();
+            reader.onload = function() {
+                resolve(String(reader.result || ''));
+            };
+            reader.onerror = function() {
+                resolve('');
+            };
+            reader.readAsDataURL(file);
         });
     }
 
@@ -1099,7 +1348,9 @@
         formData.append('token', sessionToken || '');
         formData.append('embed_token', config.embedToken || '');
 
-        fetch(config.apiEndpoint.replace(/\/$/, '') + '/upload_attachment', {
+        readAttachmentDataBase64(file).then(function(attachmentDataBase64) {
+        const previewDataUrl = /^data:image\//i.test(attachmentDataBase64) ? attachmentDataBase64 : '';
+        return fetch(config.apiEndpoint.replace(/\/$/, '') + '/upload_attachment', {
             method: 'POST',
             body: formData
         }).then(function(res) {
@@ -1114,7 +1365,9 @@
                 message: file.name,
                 message_type: 'attachment',
                 attachment_url: uploadData.url,
-                attachment_type: uploadData.type
+                attachment_type: uploadData.type,
+                attachment_preview_data: previewDataUrl || '',
+                attachment_data_base64: attachmentDataBase64 || ''
             };
 
             socket.emit('send_message', payload, function(response) {
@@ -1123,7 +1376,7 @@
                     errorEl.style.display = 'block';
                     return;
                 }
-                appendAttachmentMessage(normalizeInboundFileUrl(uploadData.url), file.name, 'sent');
+                appendAttachmentMessage(normalizeInboundFileUrl(uploadData.url), file.name, 'sent', previewDataUrl || '', attachmentDataBase64 || '');
             });
         }).catch(function(err) {
             errorEl.textContent = err.message || 'Failed to upload file';
@@ -1132,11 +1385,14 @@
             sendBtn.textContent = originalText;
             sendBtn.disabled = false;
         });
+        });
     }
 
     function destroy() {
         clearReconnectTimer();
         clearTokenTimers();
+        stopStatusPolling();
+        stopWaitingEta();
         cleanupSocket();
         if (widget) {
             widget.remove();
@@ -1237,6 +1493,7 @@
                     return;
                 }
                 appendMessage(String(message), 'sent');
+                emitUserStopTyping();
             });
             return true;
         },
