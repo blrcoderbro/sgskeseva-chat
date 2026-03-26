@@ -72,7 +72,6 @@
     let waitingEtaMinMinutes = null;
     let waitingEtaMaxMinutes = null;
     let statusPollTimer = null;
-    let presenceHeartbeatTimer = null;
     let statusEventKey = '';
     let userTypingActive = false;
     let userTypingIdleTimer = null;
@@ -872,7 +871,7 @@
 
         messages.forEach(function(msg) {
             const type = msg.role === 'user' ? 'sent' : 'received';
-            const attachmentUrl = normalizeInboundFileUrl(msg.signed_download_url || msg.attachment_url || msg.file_path || '');
+            const attachmentUrl = normalizeInboundFileUrl(msg.attachment_url || msg.file_path || '');
             const previewData = normalizeInboundFileUrl(msg.attachment_preview_data || '');
             const attachmentDataBase64 = String(msg.attachment_data_base64 || '').trim();
             if ((attachmentUrl || previewData || attachmentDataBase64) && typeof appendAttachmentMessage === 'function') {
@@ -1022,29 +1021,6 @@
         }, 1200);
     }
 
-    function emitPresenceWidgetState(state) {
-        if (!socket || !isAuthenticated) return;
-        socket.emit('presence:widget_state', { state: state });
-    }
-
-    function emitPresenceHeartbeat() {
-        if (!socket || !isAuthenticated) return;
-        socket.emit('presence:heartbeat');
-    }
-
-    function startPresenceHeartbeat() {
-        stopPresenceHeartbeat();
-        emitPresenceHeartbeat();
-        presenceHeartbeatTimer = window.setInterval(emitPresenceHeartbeat, 15000);
-    }
-
-    function stopPresenceHeartbeat() {
-        if (presenceHeartbeatTimer) {
-            clearInterval(presenceHeartbeatTimer);
-            presenceHeartbeatTimer = null;
-        }
-    }
-
     function resetConnectionState() {
         isAuthenticated = false;
         operatorAccepted = false;
@@ -1057,16 +1033,12 @@
         }
         stopWaitingEta();
         stopStatusPolling();
-        stopPresenceHeartbeat();
         setInputEnabled(false);
     }
 
     function cleanupSocket() {
         if (!socket) return;
         try {
-            if (isAuthenticated) {
-                socket.emit('presence:disconnect_intent', { reason: 'cleanup' });
-            }
             socket.removeAllListeners();
             socket.disconnect();
         } catch (e) {
@@ -1170,8 +1142,6 @@
             setInputEnabled(false);
             startWaitingEta();
             startStatusPolling();
-            emitPresenceWidgetState('open');
-            startPresenceHeartbeat();
         });
 
         socket.on('auth_error', function() {
@@ -1183,21 +1153,6 @@
             if (String(evt.application_id || evt.id || '') !== String(config.applicationId)) return;
             markOperatorConnected(evt.operator_name || 'Operator', false);
             operatorConnectionNotified = true;
-        });
-
-        socket.on('conversation:presence_changed', function(evt) {
-            if (!evt) return;
-            if (String(evt.source_id || '') !== String(config.applicationId)) return;
-            const presence = Array.isArray(evt.presence) ? evt.presence : [];
-            const anyOnline = presence.some(function(p) {
-                const state = String((p && p.presence_state) || '').toLowerCase();
-                return state === 'online' || state === 'waiting';
-            });
-            if (!anyOnline && isAuthenticated) {
-                appendSystemMessage('Connection looks inactive. Reopen the chat tab to continue.', { key: 'presence-inactive' });
-            } else {
-                clearSystemMessageByKey('presence-inactive');
-            }
         });
 
         socket.on('application_completed', function(evt) {
@@ -1241,7 +1196,7 @@
             if (msg.sender_type === 'end_user') return;
             markOperatorConnected(msg.sender_name || 'Operator', false);
 
-            const attachmentUrl = normalizeInboundFileUrl(msg.signed_download_url || msg.attachment_url || msg.file_path || '');
+            const attachmentUrl = normalizeInboundFileUrl(msg.attachment_url || msg.file_path || '');
             const previewData = normalizeInboundFileUrl(msg.attachment_preview_data || '');
             const attachmentDataBase64 = String(msg.attachment_data_base64 || '').trim();
             if (attachmentUrl || previewData || attachmentDataBase64) {
@@ -1573,27 +1528,7 @@
 
     window.SGSKChat = window.ChatWidget;
 
-    document.addEventListener('visibilitychange', function() {
-        if (document.visibilityState === 'hidden') {
-            emitPresenceWidgetState('hidden');
-        } else if (document.visibilityState === 'visible') {
-            emitPresenceWidgetState('open');
-            emitPresenceHeartbeat();
-        }
-    });
-
-    window.addEventListener('pagehide', function() {
-        emitPresenceWidgetState('closed');
-        if (socket && isAuthenticated) {
-            socket.emit('presence:disconnect_intent', { reason: 'pagehide' });
-        }
-    });
-
     window.addEventListener('beforeunload', function() {
-        emitPresenceWidgetState('closed');
-        if (socket && isAuthenticated) {
-            socket.emit('presence:disconnect_intent', { reason: 'beforeunload' });
-        }
         clearReconnectTimer();
         clearTokenTimers();
         cleanupSocket();
